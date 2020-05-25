@@ -8,6 +8,7 @@ use std::fs;
 use std::borrow::Borrow;
 use std::path;
 use std::convert::AsRef;
+use tempfile::NamedTempFile;
 
 pub use OverwriteBehavior::{AllowOverwrite, DisallowOverwrite};
 
@@ -130,25 +131,18 @@ impl AtomicFile {
 
     /// Open a temporary file, call `f` on it (which is supposed to write to it), then move the
     /// file atomically to `self.path`.
-    ///
-    /// The temporary file is written to a randomized temporary subdirectory with prefix `.atomicwrite`.
     pub fn write<T, E, F>(&self, f: F) -> Result<T, Error<E>>
     where F: FnOnce(&mut fs::File) -> Result<T, E>
     {
-        let tmpdir = tempfile::Builder::new()
-            .prefix(".atomicwrite")
-            .tempdir_in(&self.tmpdir)
-            .map_err(Error::Internal)?;
+        let mut temporary_file = NamedTempFile::new_in(&self.tmpdir).map_err(Error::Internal)?;
+        let file = temporary_file.as_file_mut();
 
-        let tmppath = tmpdir.path().join("tmpfile.tmp");
-        let rv = {
-            let mut tmpfile = fs::File::create(&tmppath).map_err(Error::Internal)?;
-            let r = f(&mut tmpfile).map_err(Error::User)?;
-            tmpfile.sync_all().map_err(Error::Internal)?;
-            r
-        };
-        self.commit(&tmppath).map_err(Error::Internal)?;
-        Ok(rv)
+        let return_value = f(file).map_err(Error::User)?;
+
+        file.sync_all().map_err(Error::Internal)?;
+        self.commit(&temporary_file.path()).map_err(Error::Internal)?;
+        
+        Ok(return_value)
     }
 }
 
